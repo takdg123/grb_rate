@@ -1,1 +1,2 @@
-# grb_rate# grb_rate
+# grb_rate
+### Required packages: scipy, astropy. pyroot, tqdm, sklearn, ...
