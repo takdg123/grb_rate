@@ -325,6 +325,26 @@ def dict_to_table(input_dict):
         table[key].unit = input_dict[key].unit
     return table
 
+def get_flux_dist(output, snr_cut = 6.5, detected=False):
+    y_tot = []
+    for i, out in enumerate(output):
+        if detected:
+            y, x = np.histogram(out["flux"]*(out["snr"]>snr_cut), np.logspace(-5, 5, 200))
+        else:
+            y, x = np.histogram(out["flux"], np.logspace(-5, 5, 200))
+        cumy = y[::-1].cumsum()[::-1]
+        y_tot.append(cumy)
+    x_ctr = center_pt(x)
+    y_tot = np.asarray(y_tot).T
+    y_out = []
+    FoV = output[0]["FoV"]
+    for i, y in enumerate(y_tot):
+        y_out.append([np.percentile(y, 50)*FoV, 
+                      np.percentile(y, 16)*FoV, 
+                      np.percentile(y, 84)*FoV])
+    y_out = np.asarray(y_out)
+    return y_out, x_ctr
+
 
 def plotRateHist(rate, ax = None, label = None, **kwargs):
 
@@ -347,24 +367,84 @@ def plotRateHist(rate, ax = None, label = None, **kwargs):
     ax.legend()
 
 
-def plotFluxHist(output, ax=None, **kwargs):
+def plotFluxHist(output, ax=None, snr_cut = 6.5, snr_cuts = None, **kwargs):
     if ax is None:
         ax = plt.gca()
 
-    y, x = np.histogram(output["flux"], bins=np.logspace(-3, 3, 100))
-    rate = np.cumsum(y[::-1])[::-1]*output["FoV"]
-    plt.step(center_pt(x), rate, where="mid", label="All")
-    y, x = np.histogram(output["flux"][output["snr"]>6.5], bins=np.logspace(-3, 3, 100))
-    rate = np.cumsum(y[::-1])[::-1]*output["FoV"]
-    plt.step(center_pt(x), rate, where="mid", label="Detectable ({} GRBs/yr)".format(int(max(rate))))
-    plt.xscale("log")
-    plt.yscale("log")
-    dist_line = interp1d(rate, center_pt(x), kind='linear')
-    cont90 = dist_line(max(rate)*0.9)
-    plt.axvline(cont90, ls=":", color="k", label = r"90% cont. ({:.1f} ph/cm$^2$/s) ".format(cont90))
-    plt.xlabel(r"Flux ({:.1f} - {:.1f} MeV) [ph/cm$^2$/s]".format(output["eRange"][0]/1000., output["eRange"][1]/1000.), fontsize=12)
-    plt.ylabel("Rate [GRBs/yr]", fontsize=12)
-    plt.legend()
+    if snr_cuts is None:
+        snr_cuts = [snr_cut]
+
+    if np.size(output) == 1:
+        y, x = np.histogram(output["flux"], bins=np.logspace(-3, 3, 100))
+        rate = np.cumsum(y[::-1])[::-1]*output["FoV"]
+        ax.step(center_pt(x), rate, where="mid", label="All sample")
+        ax.set_ylim(1e-2, max(y[:,2])*2)
+
+        for snr_cut in snr_cuts:
+            y, x = np.histogram(output["flux"][output["snr"]>snr_cut], bins=np.logspace(-3, 3, 100))
+            rate = np.cumsum(y[::-1])[::-1]*output["FoV"]
+            etc = ax.step(center_pt(x), rate, where="mid", label="Apply SNR cut (SNR>{})".format(snr_cut))
+        
+            dist_line = interp1d(rate, center_pt(x), kind='linear')
+            cont90 = dist_line(max(rate)*0.9)
+            ax.axvline(cont90, ls=":", color=etc[0].get_color(), label = r"90% cont. ({:.1f} ph/cm$^2$/s) ".format(cont90))
+    else:
+        y, x = get_flux_dist(output)
+        ax.step(x, y[:,0], where="mid", label="All sample")
+        ax.set_ylim(1e-2, max(y[:,2])*2)
+
+        for snr_cut in snr_cuts:
+            y, x = get_flux_dist(output, detected=True, snr_cut=snr_cut)
+            etc = ax.step(x, y[:,0], where="mid", label="Apply SNR cut (SNR>{})".format(snr_cut))
+            ax.fill_between(x, y[:,1], y[:,2], alpha=0.3, color=etc[0].get_color())
+        
+            dist_line = interp1d(y[:,0], x, kind='linear')
+            cont90 = dist_line(max(y[:,0])*0.9)
+            ax.axvline(cont90, ls=":", color=etc[0].get_color(), label = r"90% cont. ({:.1f} ph/cm$^2$/s) ".format(cont90))
+            
+        output=output[0]
+    
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel(r"Photon flux ({:.1f} - {:.1f} MeV) [ph/cm$^2$/s]".format(output["eRange"][0]/1000., output["eRange"][1]/1000.), fontsize=12)
+    ax.set_ylabel("Rate [GRBs/yr]", fontsize=12)
+    ax.grid()
+    if np.size(snr_cuts) > 1:
+        ax.legend(fontsize=12, bbox_to_anchor=(1.05, 1), loc='upper left')
+    else:
+        ax.legend(fontsize=12)
+
+def plotEfficiency(output, snr_cut = 6.5):
+    flux = output["flux"]
+    snr = output["snr"]
+    eran = output["eRange"]
+
+    f, ax = plt.subplots(2,1, figsize=(7, 7), gridspec_kw={'height_ratios':[5,1]})
+    ys, xs, etc = ax[0].hist(flux, np.logspace(-5, 5, 200), histtype="step", label="All sample")
+    yd, xd, etc = ax[0].hist(flux[snr > snr_cut], np.logspace(-5, 5, 200), color=etc[0].get_edgecolor(), label="Apply SNR cut (SNR>6.5)")
+    ax[0].set_ylabel("The number of events", fontsize=12)
+    ax[0].set_xscale("log")
+    ax[0].set_yscale("log")
+    ax[0].grid()
+    ax[0].legend(fontsize=12)
+
+    x_ctr = center_pt(xs)
+    ys[ys==0] = 1e-20
+    eff = yd/ys
+    eff = np.nan_to_num(eff)
+    eff = np.hstack((eff[x_ctr < 10], np.ones(sum(x_ctr >= 10))))
+
+    ax[1].step(x_ctr, eff, color=etc[0].get_facecolor())
+    ax[1].set_xscale("log")
+    ax[1].set_ylim(5e-3, 2)
+    ax[1].set_yscale("log")
+    ax[1].set_ylabel(r"$\eta$", fontsize=12)
+    ax[1].set_yticks([1e-2, 1e-1, 1])
+    ax[1].set_yticklabels(["1%", "10%", "100%"])
+    ax[1].grid()
+    ax[1].set_xlabel(r"Photon flux ({:.1f} - {:.1f} MeV) [ph/cm$^2$/s]".format(eran[0]/1000., eran[1]/1000.), fontsize=12)
+
+
 
 class EstimateRate:
 
@@ -379,7 +459,8 @@ class EstimateRate:
             self._inst = inst
             
             if FoV is None:
-                FoV = (np.cos(math.radians(0))-np.cos(math.radians(60)))/2.0 # AMEGO defalut
+                FoV = 0.25 # defalut (3.14 steradian)
+
             self._FoV = obs_factor = 1./10.*FoV
             self._verbose = verbose
             self._snr_cut = snr_cut
