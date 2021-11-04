@@ -6,8 +6,6 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 
-import ROOT
-
 from astropy.io import fits
 from astropy.table import Table
 import astropy.units as u
@@ -130,6 +128,7 @@ def fit_logNlogS_curve(grbType="short", minFlux = None, factor = 1./0.7, wbins=[
         minFlux = min(Swiftflx)
         
     N = int(10**p0[0]*minFlux**(-3/2.)*factor)
+    N_max = int(max(sy*10**weight_GS))
 
     if plotting:
         plt.hist(GBMflx, bins=b, cumulative=-1, histtype='step', label="GBM GRBs")
@@ -138,16 +137,26 @@ def fit_logNlogS_curve(grbType="short", minFlux = None, factor = 1./0.7, wbins=[
         
         plt.plot(gx, 10**p0[0]*gx**(-3/2.), label="Linear-fit")
         plt.plot(gx, 10**p0[0]*gx**(-3/2.)*factor, label="Linear-fit (All sky, x{:.2f})".format(factor))
-        plt.axvline(b[wbins[0]], ls=":")
-        plt.axvline(b[wbins[-1]+1], ls=":")
-        plt.ylim(0.8,10000)
+        #plt.axvline(b[wbins[0]], ls=":")
+        #plt.axvline(b[wbins[-1]+1], ls=":")
+        if grbType == "long":
+            plt.ylim(0.8,2000000)
+        else:
+            plt.ylim(0.8,10000)
         plt.xscale("log")
         plt.yscale("log")
         plt.xlabel("Photon flux (50 - 300 keV) [ph. cm$^{-2}$ s$^{-1}$]", fontsize=12)
-        plt.ylabel("Number of GRBs", fontsize=12)
+        plt.ylabel("Number of GRBs (in 10 yrs)", fontsize=12)
+        plt.axhline(N, label="Minimum GRBs", ls=":", color="r")
+        plt.text(1e3, N*0.9, "N = {}".format(N), va="top", ha="right")
+        plt.text(1e3, N_max*0.9, "N = {}".format(N_max), va="top", ha="right")
+        plt.axvline(minFlux, label="Minimum flux", ls="--", color="k")
+        plt.text(minFlux*2, 10, r"Flux$_{{min}}$ = {:.1e}".format(minFlux), va="top", ha="left")
+        plt.axhline(N_max, label="Maximum GRBs", ls=":", color="orange")
         plt.legend(fontsize=12, bbox_to_anchor=(1.05, 1), loc='upper left')
 
-    output = {"N_0": p0[0], "N_max": N, "N_min": int(max(sy*10**weight_GS)), "w": weight_GS}
+        
+    output = {"N_0": p0[0], "N_max": N, "N_min":N_max, "w": weight_GS}
     return output
 
 def generate_params(N, GBMData="./fermi/GBM.fits", grbType="short"):
@@ -158,7 +167,7 @@ def generate_params(N, GBMData="./fermi/GBM.fits", grbType="short"):
         for alp, ep in zip(gbm_params[:,1],np.log10(gbm_params[:,2])):
             X.append([alp, ep])
     elif grbType == "long":    
-        for alp, ep, beta in zip(gbm_params[:,1],log10(gbm_params[:,2]), gbm_params[:,3]):
+        for alp, ep, beta in zip(gbm_params[:,1],np.log10(gbm_params[:,2]), gbm_params[:,3]):
             X.append([alp, ep, beta])
     
     # Note that bandwidth from alpha, beta, and Ep are similar.
@@ -175,7 +184,7 @@ def generate_bursts(logNlogS=None, grbType="short", plotting=False, verbose=True
     if grbType == "short":
         N = logNlogS["N_max"]
     elif grbType == "long":
-        N = logNlogS["N_min"]
+        N = logNlogS["N_max"]
 
     rawflx = 1./np.random.power(1.5, N)
     y, x = np.histogram(rawflx/100., np.logspace(np.log10(min(rawflx))-3, np.log10(max(rawflx))-2, 100))
@@ -194,7 +203,7 @@ def generate_bursts(logNlogS=None, grbType="short", plotting=False, verbose=True
             norm.append(f/quad(CUTOFFPL, 50, 300, args=(1, alpha, ep))[0])
         elif grbType == "long":
             beta = par[2]
-            norm.append(f/quad(BAND, 50, 300, args=(1, alpha, ep, beta))[0])
+            norm.append(f/quad(BAND, 50, 300, args=(1, alpha, beta, ep))[0])
 
     norm = np.asarray(norm)
 
@@ -240,8 +249,8 @@ def generate_bursts(logNlogS=None, grbType="short", plotting=False, verbose=True
         ax[2].legend(fontsize=12)
 
         if grbType == "long":
-            ax[3].hist(gbm_params[:,3], bins=np.linspace(-3, -1.5, 20), normed=True, histtype="step", label="GBM GRBs" )
-            ax[3].hist(table["beta"], bins=np.linspace(-3, -1.5, 20), normed=True, zorder=-1, color=etc[0].get_facecolor(), label="Synthesized", alpha=0.5)
+            ax[3].hist(gbm_params[:,3], bins=np.linspace(-3, -1.5, 20), density=True, histtype="step", label="GBM GRBs" )
+            ax[3].hist(table["beta"], bins=np.linspace(-3, -1.5, 20), density=True, zorder=-1, color=etc[0].get_facecolor(), label="Synthesized", alpha=0.5)
             ax[3].set_xlabel("High energy index", fontsize=12)
             ax[3].set_ylabel("Occurance rate", fontsize=12)
             ax[3].axvline(np.average(table["beta"]), label="Ave: {:.2f}".format(np.average(table["beta"])), color="r")
@@ -268,7 +277,11 @@ def effective_area(file, plotting = False, **kwargs):
     return ave_eff
 
 def bkg_from_ROOT(file, eLowEdges, eHighEdges, evttype = "UC", plotting = False, **kwargs):
-    
+    try:
+        import ROOT
+    except:
+        print("pyROOT should be installed.")
+        return
     f = ROOT.TFile(file)
     if evttype not in ["UC", "TC", "P"]:
         print("[Error] The entered event type is wrong. options: 'evttype' = 'UC', 'TC', or 'P'.")
@@ -510,7 +523,7 @@ class EstimateRate:
                     cnts_per_cm2 = quad(CUTOFFPL, elow, ehigh, args=(norm, alpha, ep))[0]
                 elif self.grbType == "long":
                     beta = burst["beta"]
-                    cnts_per_cm2 = quad(BAND, elow, ehigh, args=(norm, alpha, ep, beta))[0]
+                    cnts_per_cm2 = quad(BAND, elow, ehigh, args=(norm, alpha, beta, ep))[0]
                 cnts.append(cnts_per_cm2*eff)
             cnts_tot.append(cnts)
             
@@ -518,7 +531,7 @@ class EstimateRate:
                 if self.grbType == "short":
                     flx_tot.append(quad(CUTOFFPL, self.eRange[0], self.eRange[1], args=(norm, alpha, ep))[0])
                 elif self.grbType == "long":
-                    flx_tot.append(quad(BAND, self.eRange[0], self.eRange[1], args=(norm, alpha, ep, beta))[0])
+                    flx_tot.append(quad(BAND, self.eRange[0], self.eRange[1], args=(norm, alpha, beta, ep))[0])
 
         self.counts = np.asarray(cnts_tot)
         self.background = inst_table["background"]
